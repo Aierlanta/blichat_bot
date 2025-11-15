@@ -143,13 +143,27 @@ class BilibiliDanmakuSender:
                 self._last_send_time = send_start_time - self.cooldown
                 logger.error(f"❌ 弹幕发送失败：{e}", exc_info=True)
                 
-                # 如果启用了自动刷新，尝试刷新后重试
+                # 如果启用了自动刷新，进行校验/刷新后尝试重试（不再依赖错误关键字匹配）
                 if self.refresher and self.enable_auto_refresh:
-                    # 检查错误是否与凭证相关
-                    error_msg = str(e).lower()
-                    if any(keyword in error_msg for keyword in ["credential", "cookie", "sessdata", "未登录", "账号", "登录"]):
-                        logger.info("检测到凭证相关错误，尝试刷新凭证...")
-                        
+                    logger.info("检测到发送异常，校验/刷新凭证后重试...")
+                    
+                    should_refresh = False
+                    try:
+                        # 优先检查是否建议刷新（临近过期）
+                        needs_refresh = await self.refresher.check_refresh_needed()
+                        if needs_refresh:
+                            should_refresh = True
+                        else:
+                            # 若未建议刷新，则检查是否仍然有效
+                            is_valid = await self.credential.check_valid()
+                            if not is_valid:
+                                should_refresh = True
+                    except Exception as check_e:
+                        # 检查流程自身失败时，采取保守策略：尝试刷新一次
+                        logger.warning(f"检查凭证状态时出错，将尝试刷新：{check_e}")
+                        should_refresh = True
+                    
+                    if should_refresh:
                         refresh_success = await self.refresher.refresh_credential()
                         
                         if refresh_success:
@@ -256,9 +270,6 @@ class BilibiliDanmakuSender:
                         user_info = await me
                         username = user_info.get("name", "未知")
                         logger.success(f"✅ 刷新后连接成功，当前用户：{username}")
-                        
-                        # 启动定期检查
-                        await self.refresher.start_periodic_check(interval_hours=24.0)
                         
                         return True
                     except Exception as retry_e:
