@@ -140,7 +140,12 @@ class OpenLiveDanmakuHandler(blivedm.BaseHandler):
             task = asyncio.create_task(self.on_danmaku(user_id, uid_crc32, username, content, user_info))
             
             def _log_task_exception(t: asyncio.Task) -> None:
-                exc = t.exception()
+                try:
+                    exc = t.exception()  # 如果任务被取消，会抛出 CancelledError
+                except asyncio.CancelledError:
+                    # 任务取消是正常的关闭流程，不记录错误
+                    return
+                
                 if exc:
                     logger.error(
                         f"弹幕回调异常：{exc}",
@@ -191,7 +196,12 @@ class OpenLiveDanmakuHandler(blivedm.BaseHandler):
             task = asyncio.create_task(self.on_danmaku(user_id, uid_crc32, username, sc_content, user_info))
             
             def _log_task_exception(t: asyncio.Task) -> None:
-                exc = t.exception()
+                try:
+                    exc = t.exception()  # 如果任务被取消，会抛出 CancelledError
+                except asyncio.CancelledError:
+                    # 任务取消是正常的关闭流程，不记录错误
+                    return
+                
                 if exc:
                     logger.error(
                         f"SC回调异常：{exc}",

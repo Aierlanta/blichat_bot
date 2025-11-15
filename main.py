@@ -35,7 +35,8 @@ class BotApplication:
         self.tg_bot = None
         self.bili_listener = None
         
-        self._shutdown_event = asyncio.Event()
+        # 延迟到事件循环运行后创建，避免在无循环上下文中创建 asyncio 对象
+        self._shutdown_event = None
         self._loop = None  # 保存运行中的事件循环引用
     
     def setup_logger(self) -> None:
@@ -69,7 +70,11 @@ class BotApplication:
         logger.info("日志系统初始化完成")
     
     def setup_signal_handlers(self) -> None:
-        """设置信号处理器（优雅关闭）"""
+        """
+        设置信号处理器（优雅关闭）
+        
+        注意：此方法必须在 run() 内部调用，确保 self._loop 和 self._shutdown_event 已初始化
+        """
         def signal_handler(sig, frame):
             logger.warning(f"收到信号 {sig}，准备关闭...")
             # 使用保存的事件循环引用进行线程安全操作
@@ -77,11 +82,8 @@ class BotApplication:
             if self._loop and not self._loop.is_closed():
                 self._loop.call_soon_threadsafe(self._shutdown_event.set)
             else:
-                # 后备方案：循环未初始化或已关闭时直接设置
-                try:
-                    self._shutdown_event.set()
-                except RuntimeError:
-                    pass  # Event 未绑定到循环，忽略
+                # 极端情况：循环已关闭（理论上不应该发生）
+                logger.error("无法设置关闭事件：事件循环已关闭")
         
         signal.signal(signal.SIGINT, signal_handler)
         # Windows 兼容：只在支持 SIGTERM 的平台上注册
@@ -226,6 +228,12 @@ class BotApplication:
         # 在协程中安全获取当前运行的事件循环
         self._loop = asyncio.get_running_loop()
         
+        # 在循环运行后创建 Event 对象
+        self._shutdown_event = asyncio.Event()
+        
+        # 此时 self._loop 已就绪，安全注册信号处理器
+        self.setup_signal_handlers()
+        
         try:
             await self.initialize()
             await self.start()
@@ -245,10 +253,7 @@ async def main():
     # 设置日志
     app.setup_logger()
     
-    # 设置信号处理
-    app.setup_signal_handlers()
-    
-    # 运行
+    # 运行（信号处理器将在 run() 内部注册，确保循环已就绪）
     await app.run()
 
 
