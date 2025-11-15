@@ -71,10 +71,19 @@ class BotApplication:
         """设置信号处理器（优雅关闭）"""
         def signal_handler(sig, frame):
             logger.warning(f"收到信号 {sig}，准备关闭...")
-            self._shutdown_event.set()
+            # 使用 call_soon_threadsafe 在事件循环中安全设置 Event
+            # 因为信号处理器在主线程中执行，而 asyncio.Event 需要在事件循环线程中操作
+            try:
+                loop = asyncio.get_event_loop()
+                loop.call_soon_threadsafe(self._shutdown_event.set)
+            except RuntimeError:
+                # 如果事件循环未运行，直接设置（启动前的信号）
+                self._shutdown_event.set()
         
         signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
+        # Windows 兼容：只在支持 SIGTERM 的平台上注册
+        if hasattr(signal, 'SIGTERM'):
+            signal.signal(signal.SIGTERM, signal_handler)
         
         logger.debug("信号处理器注册完成")
     
@@ -190,6 +199,11 @@ class BotApplication:
             except asyncio.TimeoutError:
                 logger.warning("监听器停止超时，强制取消")
                 listener_task.cancel()
+                # 等待任务清理资源（防止资源泄漏）
+                try:
+                    await listener_task
+                except asyncio.CancelledError:
+                    pass
         
         # 停止TG Bot
         if self.tg_bot:

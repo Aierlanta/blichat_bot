@@ -71,20 +71,25 @@ class BilibiliDanmakuSender:
         """
         async with self._send_lock:
             # 检查冷却时间
-            now = time.time()
-            elapsed = now - self._last_send_time
+            elapsed = time.time() - self._last_send_time
             
             if elapsed < self.cooldown:
                 wait_time = self.cooldown - elapsed
                 logger.debug(f"冷却中，等待 {wait_time:.1f}秒...")
                 await asyncio.sleep(wait_time)
             
+            # 在发送前更新时间戳，避免 API 调用耗时导致漂移
+            send_start_time = time.time()
+            self._last_send_time = send_start_time
+            
             # 构造弹幕内容
             if at_uid_crc32:  # 使用uid_crc32判断是否为回复
                 # B站直播弹幕的@功能有限，使用明显的文本格式
                 # 格式：@用户名：回复内容
                 final_content = f"@{at_username}：{content}"
-                logger.info(f"准备发送回复弹幕：{final_content} (目标用户: {at_uid_crc32[:8]}...)")
+                # 安全处理 uid_crc32 切片（防止 None 或空字符串）
+                uid_display = at_uid_crc32[:8] if at_uid_crc32 else "Unknown"
+                logger.info(f"准备发送回复弹幕：{final_content} (目标用户: {uid_display}...)")
             else:
                 final_content = content
                 logger.info(f"准备发送弹幕：{final_content}")
@@ -94,11 +99,12 @@ class BilibiliDanmakuSender:
                 danmaku_obj = Danmaku(text=final_content)
                 await self.room.send_danmaku(danmaku_obj)
                 
-                self._last_send_time = time.time()
                 logger.success(f"✅ 弹幕发送成功：{final_content}")
                 return True
             
             except Exception as e:
+                # 发送失败时重置时间戳，允许立即重试
+                self._last_send_time = send_start_time - self.cooldown
                 logger.error(f"❌ 弹幕发送失败：{e}", exc_info=True)
                 return False
     

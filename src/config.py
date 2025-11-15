@@ -37,7 +37,12 @@ class BilibiliConfig(BaseModel):
     def validate_cookie(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError("Cookie不能为空，没有通行证怎么进仙境？")
-        return v.strip()
+        # 检查是否为占位符
+        v = v.strip()
+        placeholders = ["your_sessdata_here", "your_bili_jct_here", "your_buvid3_here"]
+        if v in placeholders:
+            raise ValueError(f"Cookie 不能使用占位符 '{v}'，请填写真实的 Cookie 值")
+        return v
 
 
 class TelegramConfig(BaseModel):

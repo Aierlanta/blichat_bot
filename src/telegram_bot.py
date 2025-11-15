@@ -75,6 +75,11 @@ class TelegramBot:
     
     async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """处理 /start 命令"""
+        # 防御性检查：避免空值解引用崩溃
+        if not update.message or not update.effective_user:
+            logger.warning("收到无效的 Update 对象（message 或 effective_user 为 None）")
+            return
+        
         welcome_text = (
             "🎭 欢迎来到BiliChat Bot！\n\n"
             "我是连接B站直播间和Telegram的魔法桥~\n\n"
@@ -90,6 +95,10 @@ class TelegramBot:
     
     async def _handle_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """处理 /help 命令"""
+        if not update.message or not update.effective_user:
+            logger.warning("收到无效的 Update 对象")
+            return
+        
         help_text = (
             "📖 使用指南\n\n"
             "1️⃣ 接收弹幕\n"
@@ -111,6 +120,10 @@ class TelegramBot:
     
     async def _handle_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """处理 /status 命令"""
+        if not update.message or not update.effective_user:
+            logger.warning("收到无效的 Update 对象")
+            return
+        
         status_text = (
             f"📊 Bot运行状态\n\n"
             f"🔗 监听房间：{self.bili_sender.config.room_id}\n"
@@ -129,6 +142,11 @@ class TelegramBot:
         - 回复消息 → @弹幕发送者
         - 直接消息 → 发送弹幕
         """
+        # 防御性检查
+        if not update.message or not update.effective_user:
+            logger.warning("收到无效的 Update 对象")
+            return
+        
         message = update.message
         user_id = update.effective_user.id
         
@@ -165,8 +183,10 @@ class TelegramBot:
             )
             return
         
+        # 安全处理 uid_crc32 切片（防止空字符串或 None）
+        uid_display = danmaku.uid_crc32[:8] if danmaku.uid_crc32 else "Unknown"
         logger.info(
-            f"处理回复消息：@{danmaku.username}({danmaku.uid_crc32[:8]}...) - {content}"
+            f"处理回复消息：@{danmaku.username}({uid_display}...) - {content}"
         )
         
         # 发送带@的弹幕
@@ -275,21 +295,24 @@ class TelegramBot:
                 text=text,
             )
             
-            # 记录映射
-            danmaku_info = DanmakuInfo(
-                user_id=user_id,
-                uid_crc32=uid_crc32,
-                username=username,
-                content=content,
-                timestamp=time.time(),
-                user_level=user_info.get("user_level", 0),
-                medal_name=user_info.get("medal_name", ""),
-                medal_level=user_info.get("medal_level", 0),
-                vip=user_info.get("vip", 0),
-                admin=user_info.get("admin", False),
-                title=user_info.get("title", ""),
-            )
-            self.mapper.add_mapping(sent_message.message_id, danmaku_info)
+            # 记录映射（确保在发送成功后立即执行，并捕获异常）
+            try:
+                danmaku_info = DanmakuInfo(
+                    user_id=user_id,
+                    uid_crc32=uid_crc32,
+                    username=username,
+                    content=content,
+                    timestamp=time.time(),
+                    user_level=user_info.get("user_level", 0),
+                    medal_name=user_info.get("medal_name", ""),
+                    medal_level=user_info.get("medal_level", 0),
+                    vip=user_info.get("vip", 0),
+                    admin=user_info.get("admin", False),
+                    title=user_info.get("title", ""),
+                )
+                self.mapper.add_mapping(sent_message.message_id, danmaku_info)
+            except Exception as map_err:
+                logger.error(f"映射添加失败，消息ID {sent_message.message_id}: {map_err}", exc_info=True)
             
             logger.debug(f"转发弹幕到TG：{text}")
             return sent_message.message_id

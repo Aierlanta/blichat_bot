@@ -136,8 +136,14 @@ class OpenLiveDanmakuHandler(blivedm.BaseHandler):
                 "title": "",
             }
             
-            # 创建异步任务调用回调
-            asyncio.create_task(self.on_danmaku(user_id, uid_crc32, username, content, user_info))
+            # 创建异步任务并捕获异常
+            task = asyncio.create_task(self.on_danmaku(user_id, uid_crc32, username, content, user_info))
+            
+            def _log_task_exception(t: asyncio.Task) -> None:
+                if t.exception():
+                    logger.error(f"弹幕回调异常：{t.exception()}", exc_info=t.exception())
+            
+            task.add_done_callback(_log_task_exception)
         
         except Exception as e:
             logger.error(f"处理弹幕时出错：{e}", exc_info=True)
@@ -177,7 +183,14 @@ class OpenLiveDanmakuHandler(blivedm.BaseHandler):
                 "title": "",
             }
             
-            asyncio.create_task(self.on_danmaku(user_id, uid_crc32, username, sc_content, user_info))
+            # 创建异步任务并捕获异常
+            task = asyncio.create_task(self.on_danmaku(user_id, uid_crc32, username, sc_content, user_info))
+            
+            def _log_task_exception(t: asyncio.Task) -> None:
+                if t.exception():
+                    logger.error(f"SC回调异常：{t.exception()}", exc_info=t.exception())
+            
+            task.add_done_callback(_log_task_exception)
         
         except Exception as e:
             logger.error(f"处理SC时出错：{e}", exc_info=True)
