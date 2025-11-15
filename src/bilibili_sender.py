@@ -271,6 +271,10 @@ class BilibiliDanmakuSender:
                         username = user_info.get("name", "未知")
                         logger.success(f"✅ 刷新后连接成功，当前用户：{username}")
                         
+                        # 刷新后重试成功时，同样启动周期性凭证检查
+                        if self.refresher:
+                            await self.refresher.start_periodic_check(interval_hours=24.0)
+                        
                         return True
                     except Exception as retry_e:
                         logger.error(f"刷新后重试仍然失败：{retry_e}")
