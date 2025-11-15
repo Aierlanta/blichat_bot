@@ -23,5 +23,5 @@ allow-direct-references = true
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
 
-[tool.uv]
-dev-dependencies = []
+[dependency-groups]
+dev = []
