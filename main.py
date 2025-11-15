@@ -161,6 +161,10 @@ class BotApplication:
             content: 弹幕内容
             user_info: 扩展用户信息
         """
+        # 过滤自身弹幕（避免“回声”被再次转发到TG）
+        if self.bili_sender and self.bili_sender.is_self_message(user_id, username, content):
+            logger.debug("忽略自身弹幕回显")
+            return
         # 转发到TG
         await self.tg_bot.forward_danmaku(user_id, uid_crc32, username, content, user_info)
     

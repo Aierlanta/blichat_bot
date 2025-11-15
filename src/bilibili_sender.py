@@ -10,6 +10,7 @@ from typing import Optional
 from bilibili_api import Credential, live
 from bilibili_api.utils.danmaku import Danmaku
 from loguru import logger
+from collections import deque
 
 from .config import BilibiliConfig
 
@@ -47,6 +48,11 @@ class BilibiliDanmakuSender:
         # 冷却控制
         self._last_send_time = 0.0
         self._send_lock = asyncio.Lock()
+        # 自身账号信息（用于识别“自己发的弹幕”）
+        self.self_uid: Optional[int] = None
+        self.self_username: Optional[str] = None
+        # 近期发送记录：用于在 Web 监听模式下抑制“回声”
+        self._recent_sent = deque(maxlen=50)  # (text, timestamp)
         
         logger.info(f"弹幕发送器初始化完成，目标房间：{config.room_id}")
     
@@ -100,6 +106,8 @@ class BilibiliDanmakuSender:
                 
                 # ✅ 成功后才更新时间戳，确保从发送完成时刻开始计算冷却
                 self._last_send_time = time.time()
+                # 记录近期发送内容（用于回声抑制）
+                self._recent_sent.append((final_content, self._last_send_time))
                 
                 logger.success(f"✅ 弹幕发送成功：{final_content}")
                 return True
@@ -126,6 +134,13 @@ class BilibiliDanmakuSender:
             user_info = await me
             
             username = user_info.get("name", "未知")
+            # 记录自身账号信息（mid 为用户UID）
+            try:
+                mid = int(user_info.get("mid") or 0)
+            except Exception:
+                mid = 0
+            self.self_uid = mid if mid > 0 else None
+            self.self_username = username or None
             logger.info(f"✅ 连接测试成功，当前用户：{username}")
             logger.info(f"✅ 目标直播间：{self.config.room_id}")
             return True
@@ -134,4 +149,23 @@ class BilibiliDanmakuSender:
             logger.error(f"❌ 连接测试失败：{e}")
             logger.error("请检查Cookie是否正确或是否已过期")
             return False
+
+    def is_self_message(self, user_id: int, username: str, content: str, *, window_seconds: float = 5.0) -> bool:
+        """
+        判断一条弹幕是否来自本Bot自身，避免“发出后又被监听到再转发”的回声。
+        优先依据真实 UID（Open Live 模式可用）；仅当无法获得可靠 UID（例如 Web 模式 uid=0）时，
+        才在时间窗口内按内容做一次性去重抑制，避免误伤他人的相同文本。
+        """
+        # 基于UID判断（Open Live 模式可靠）
+        if self.self_uid and user_id and user_id == self.self_uid:
+            return True
+        # 仅当无法依据UID判断时，才基于近期发送内容做回声抑制
+        if not user_id or user_id == 0 or not self.self_uid:
+            # 基于近期发送内容判断（Web 监听的回声抑制）
+            now = time.time()
+            for text, ts in list(self._recent_sent):
+                if now - ts <= window_seconds and text == content:
+                    return True
+        now = time.time()
+        return False
 
