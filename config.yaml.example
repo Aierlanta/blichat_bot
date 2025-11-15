@@ -1,0 +1,60 @@
+# BiliChat Bot 配置文件示例
+# 复制此文件为 config.yaml 并填写真实信息
+
+# B站直播间配置
+bilibili:
+  # 直播间房间号（短号或长号均可）
+  room_id: 12345678
+  
+  # B站Cookie（从浏览器获取）
+  # 获取方式：
+  # 1. 登录 https://bilibili.com
+  # 2. 打开浏览器开发者工具（F12）
+  # 3. 进入 Application → Cookies → https://bilibili.com
+  # 4. 找到以下三个Cookie的值
+  sessdata: "your_sessdata_here"
+  bili_jct: "your_bili_jct_here"
+  buvid3: "your_buvid3_here"
+  
+  # ===== Open Live API配置（可选）=====
+  # 使用Open Live API可以获取完整用户名（非脱敏）
+  # 需要主播权限！
+  use_open_live: false  # 改为true启用Open Live API
+  
+  # Open Live API凭证（从B站创作中心获取）
+  # 获取方式：
+  # 1. 登录 https://link.bilibili.com/
+  # 2. 创建项目
+  # 3. 获取以下信息
+  access_key_id: ""       # 访问密钥ID
+  access_key_secret: ""   # 访问密钥Secret
+  app_id: 0               # 应用ID（数字）
+  auth_code: ""           # 身份码（主播身份验证码）
+
+# Telegram Bot配置
+telegram:
+  # Bot Token（从 @BotFather 获取）
+  # 获取方式：
+  # 1. 在TG中找 @BotFather
+  # 2. 发送 /newbot 创建机器人
+  # 3. 按提示操作，获取Token
+  bot_token: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+  
+  # 目标聊天ID（你的TG用户ID）
+  # 获取方式：
+  # 1. 在TG中找 @userinfobot
+  # 2. 发送任意消息获取你的ID
+  # 注意：必须是数字，不是用户名
+  chat_id: 123456789
+
+# Bot行为配置（可选，使用默认值）
+bot:
+  # 是否过滤系统消息（进场、关注等）
+  filter_system_message: true
+  
+  # 发送弹幕的冷却时间（秒）
+  danmaku_cooldown: 1.0
+  
+  # 消息映射缓存大小
+  message_cache_size: 100
+
