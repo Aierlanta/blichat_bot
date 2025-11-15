@@ -136,8 +136,12 @@ class BilibiliDanmakuSender:
             username = user_info.get("name", "未知")
             # 记录自身账号信息（mid 为用户UID）
             try:
-                mid = int(user_info.get("mid") or 0)
-            except Exception:
+                mid_value = user_info.get("mid") or 0
+                mid = int(mid_value)
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    f"无法解析当前账号UID，raw_mid={mid_value!r}，将降级为基于内容的回声抑制：{exc}"
+                )
                 mid = 0
             self.self_uid = mid if mid > 0 else None
             self.self_username = username or None
@@ -166,6 +170,5 @@ class BilibiliDanmakuSender:
             for text, ts in list(self._recent_sent):
                 if now - ts <= window_seconds and text == content:
                     return True
-        now = time.time()
         return False
 
