@@ -78,9 +78,8 @@ class BilibiliDanmakuSender:
                 logger.debug(f"冷却中，等待 {wait_time:.1f}秒...")
                 await asyncio.sleep(wait_time)
             
-            # 在发送前更新时间戳，避免 API 调用耗时导致漂移
+            # 记录发送开始时间（用于失败重试逻辑）
             send_start_time = time.time()
-            self._last_send_time = send_start_time
             
             # 构造弹幕内容
             if at_uid_crc32:  # 使用uid_crc32判断是否为回复
@@ -98,6 +97,9 @@ class BilibiliDanmakuSender:
                 # 发送弹幕（需要Danmaku对象）
                 danmaku_obj = Danmaku(text=final_content)
                 await self.room.send_danmaku(danmaku_obj)
+                
+                # ✅ 成功后才更新时间戳，确保从发送完成时刻开始计算冷却
+                self._last_send_time = time.time()
                 
                 logger.success(f"✅ 弹幕发送成功：{final_content}")
                 return True

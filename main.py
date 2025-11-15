@@ -36,6 +36,7 @@ class BotApplication:
         self.bili_listener = None
         
         self._shutdown_event = asyncio.Event()
+        self._loop = None  # 保存运行中的事件循环引用
     
     def setup_logger(self) -> None:
         """配置日志"""
@@ -71,14 +72,16 @@ class BotApplication:
         """设置信号处理器（优雅关闭）"""
         def signal_handler(sig, frame):
             logger.warning(f"收到信号 {sig}，准备关闭...")
-            # 使用 call_soon_threadsafe 在事件循环中安全设置 Event
+            # 使用保存的事件循环引用进行线程安全操作
             # 因为信号处理器在主线程中执行，而 asyncio.Event 需要在事件循环线程中操作
-            try:
-                loop = asyncio.get_event_loop()
-                loop.call_soon_threadsafe(self._shutdown_event.set)
-            except RuntimeError:
-                # 如果事件循环未运行，直接设置（启动前的信号）
-                self._shutdown_event.set()
+            if self._loop and not self._loop.is_closed():
+                self._loop.call_soon_threadsafe(self._shutdown_event.set)
+            else:
+                # 后备方案：循环未初始化或已关闭时直接设置
+                try:
+                    self._shutdown_event.set()
+                except RuntimeError:
+                    pass  # Event 未绑定到循环，忽略
         
         signal.signal(signal.SIGINT, signal_handler)
         # Windows 兼容：只在支持 SIGTERM 的平台上注册
@@ -220,6 +223,9 @@ class BotApplication:
     
     async def run(self) -> None:
         """主运行流程"""
+        # 在协程中安全获取当前运行的事件循环
+        self._loop = asyncio.get_running_loop()
+        
         try:
             await self.initialize()
             await self.start()

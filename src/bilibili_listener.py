@@ -144,8 +144,12 @@ class DanmakuHandler(blivedm.BaseHandler):
             
             # 添加异常回调，确保异常被记录
             def _log_task_exception(t: asyncio.Task) -> None:
-                if t.exception():
-                    logger.error(f"弹幕回调异常：{t.exception()}", exc_info=t.exception())
+                exc = t.exception()
+                if exc:
+                    logger.error(
+                        f"弹幕回调异常：{exc}",
+                        exc_info=(type(exc), exc, exc.__traceback__)
+                    )
             
             task.add_done_callback(_log_task_exception)
         
@@ -197,8 +201,12 @@ class DanmakuHandler(blivedm.BaseHandler):
             task = asyncio.create_task(self.on_danmaku(user_id, uid_crc32, username, sc_content, user_info))
             
             def _log_task_exception(t: asyncio.Task) -> None:
-                if t.exception():
-                    logger.error(f"SC回调异常：{t.exception()}", exc_info=t.exception())
+                exc = t.exception()
+                if exc:
+                    logger.error(
+                        f"SC回调异常：{exc}",
+                        exc_info=(type(exc), exc, exc.__traceback__)
+                    )
             
             task.add_done_callback(_log_task_exception)
         
