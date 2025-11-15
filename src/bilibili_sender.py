@@ -6,13 +6,15 @@ B站弹幕发送器 - 仙境传声筒
 import asyncio
 import time
 from typing import Optional
+from pathlib import Path
 
 from bilibili_api import Credential, live
 from bilibili_api.utils.danmaku import Danmaku
 from loguru import logger
 from collections import deque
 
-from .config import BilibiliConfig
+from .config import BilibiliConfig, Config
+from .credential_refresher import CredentialRefresher
 
 
 class BilibiliDanmakuSender:
@@ -23,20 +25,32 @@ class BilibiliDanmakuSender:
     实现冷却机制，防止频率过快被封禁
     """
     
-    def __init__(self, config: BilibiliConfig, cooldown: float = 1.0):
+    def __init__(
+        self,
+        config: BilibiliConfig,
+        cooldown: float = 1.0,
+        full_config: Optional[Config] = None,
+        config_path: Optional[Path] = None,
+        enable_auto_refresh: bool = True,
+    ):
         """
         Args:
             config: B站配置
             cooldown: 发送冷却时间（秒）
+            full_config: 完整配置对象（用于保存刷新后的凭证）
+            config_path: 配置文件路径
+            enable_auto_refresh: 是否启用自动刷新
         """
         self.config = config
         self.cooldown = cooldown
+        self.enable_auto_refresh = enable_auto_refresh
         
         # 创建凭证
         self.credential = Credential(
             sessdata=config.sessdata,
             bili_jct=config.bili_jct,
             buvid3=config.buvid3,
+            ac_time_value=config.ac_time_value or None,
         )
         
         # 创建直播间对象（用于发送弹幕）
@@ -45,13 +59,25 @@ class BilibiliDanmakuSender:
             credential=self.credential,
         )
         
+        # 凭证刷新器
+        self.refresher: Optional[CredentialRefresher] = None
+        if enable_auto_refresh and full_config:
+            self.refresher = CredentialRefresher(
+                credential=self.credential,
+                config=full_config,
+                config_path=config_path,
+            )
+            logger.info("✅ 凭证自动刷新已启用")
+        elif enable_auto_refresh and not full_config:
+            logger.warning("⚠️ 未提供完整配置，凭证自动刷新已禁用")
+        
         # 冷却控制
         self._last_send_time = 0.0
         self._send_lock = asyncio.Lock()
-        # 自身账号信息（用于识别“自己发的弹幕”）
+        # 自身账号信息（用于识别"自己发的弹幕"）
         self.self_uid: Optional[int] = None
         self.self_username: Optional[str] = None
-        # 近期发送记录：用于在 Web 监听模式下抑制“回声”
+        # 近期发送记录：用于在 Web 监听模式下抑制"回声"
         self._recent_sent = deque(maxlen=50)  # (text, timestamp)
         
         logger.info(f"弹幕发送器初始化完成，目标房间：{config.room_id}")
@@ -116,6 +142,38 @@ class BilibiliDanmakuSender:
                 # 发送失败时重置时间戳，允许立即重试
                 self._last_send_time = send_start_time - self.cooldown
                 logger.error(f"❌ 弹幕发送失败：{e}", exc_info=True)
+                
+                # 如果启用了自动刷新，尝试刷新后重试
+                if self.refresher and self.enable_auto_refresh:
+                    # 检查错误是否与凭证相关
+                    error_msg = str(e).lower()
+                    if any(keyword in error_msg for keyword in ["credential", "cookie", "sessdata", "未登录", "账号", "登录"]):
+                        logger.info("检测到凭证相关错误，尝试刷新凭证...")
+                        
+                        refresh_success = await self.refresher.refresh_credential()
+                        
+                        if refresh_success:
+                            # 刷新room对象
+                            self.room = live.LiveRoom(
+                                room_display_id=self.config.room_id,
+                                credential=self.credential,
+                            )
+                            
+                            logger.info("凭证刷新成功，重试发送...")
+                            
+                            # 重试一次
+                            try:
+                                danmaku_obj = Danmaku(text=final_content)
+                                await self.room.send_danmaku(danmaku_obj)
+                                
+                                self._last_send_time = time.time()
+                                self._recent_sent.append((final_content, self._last_send_time))
+                                
+                                logger.success(f"✅ 刷新后弹幕发送成功：{final_content}")
+                                return True
+                            except Exception as retry_e:
+                                logger.error(f"刷新后重试仍然失败：{retry_e}")
+                
                 return False
     
     async def test_connection(self) -> bool:
@@ -126,6 +184,27 @@ class BilibiliDanmakuSender:
             是否连接成功
         """
         try:
+            # 如果启用了自动刷新，先检查凭证
+            if self.refresher:
+                logger.info("🔍 检查凭证有效性...")
+                
+                # 检查是否需要刷新
+                needs_refresh = await self.refresher.check_refresh_needed()
+                
+                if needs_refresh:
+                    logger.info("🔄 凭证即将过期，尝试刷新...")
+                    success = await self.refresher.refresh_credential()
+                    
+                    if success:
+                        logger.success("✅ 凭证刷新成功")
+                        # 刷新room对象以使用新凭证
+                        self.room = live.LiveRoom(
+                            room_display_id=self.config.room_id,
+                            credential=self.credential,
+                        )
+                    else:
+                        logger.warning("⚠️ 凭证刷新失败，继续使用旧凭证")
+            
             # 尝试获取用户信息来测试凭证
             from bilibili_api import user
             
@@ -147,10 +226,44 @@ class BilibiliDanmakuSender:
             self.self_username = username or None
             logger.info(f"✅ 连接测试成功，当前用户：{username}")
             logger.info(f"✅ 目标直播间：{self.config.room_id}")
+            
+            # 启动定期检查（24小时检查一次）
+            if self.refresher:
+                await self.refresher.start_periodic_check(interval_hours=24.0)
+            
             return True
         
         except Exception as e:
             logger.error(f"❌ 连接测试失败：{e}")
+            
+            # 如果失败了且启用了自动刷新，尝试刷新后重试
+            if self.refresher and self.enable_auto_refresh:
+                logger.info("尝试刷新凭证后重试...")
+                
+                refresh_success = await self.refresher.refresh_credential()
+                
+                if refresh_success:
+                    # 刷新room对象
+                    self.room = live.LiveRoom(
+                        room_display_id=self.config.room_id,
+                        credential=self.credential,
+                    )
+                    
+                    # 重试一次
+                    try:
+                        from bilibili_api import user
+                        me = user.get_self_info(credential=self.credential)
+                        user_info = await me
+                        username = user_info.get("name", "未知")
+                        logger.success(f"✅ 刷新后连接成功，当前用户：{username}")
+                        
+                        # 启动定期检查
+                        await self.refresher.start_periodic_check(interval_hours=24.0)
+                        
+                        return True
+                    except Exception as retry_e:
+                        logger.error(f"刷新后重试仍然失败：{retry_e}")
+            
             logger.error("请检查Cookie是否正确或是否已过期")
             return False
 

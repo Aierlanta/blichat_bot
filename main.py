@@ -111,11 +111,14 @@ class BotApplication:
         logger.info("🗺️ 初始化消息映射器...")
         self.mapper = MessageMapper(max_size=self.config.bot.message_cache_size)
         
-        # 初始化B站发送器
+        # 初始化B站发送器（启用自动刷新）
         logger.info("📤 初始化B站弹幕发送器...")
         self.bili_sender = BilibiliDanmakuSender(
             config=self.config.bilibili,
             cooldown=self.config.bot.danmaku_cooldown,
+            full_config=self.config,  # 传入完整配置以支持自动刷新
+            config_path=Path("config.yaml"),
+            enable_auto_refresh=True,  # 启用自动刷新
         )
         
         # 测试B站连接
@@ -246,6 +249,14 @@ class BotApplication:
                 await self.tg_bot.stop()
             except Exception as e:
                 logger.error(f"停止TG Bot时出错：{e}", exc_info=True)
+        
+        # 停止凭证刷新器（如果已启用）
+        if self.bili_sender and self.bili_sender.refresher:
+            try:
+                logger.info("⏹️ 停止凭证自动刷新任务...")
+                await self.bili_sender.refresher.stop_periodic_check()
+            except Exception as e:
+                logger.error(f"停止刷新器时出错：{e}", exc_info=True)
         
         # 清理映射缓存（如果已创建）
         if self.mapper:

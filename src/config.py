@@ -17,6 +17,7 @@ class BilibiliConfig(BaseModel):
     sessdata: str = Field(..., description="SESSDATA Cookie")
     bili_jct: str = Field(..., description="bili_jct Cookie")
     buvid3: str = Field(..., description="buvid3 Cookie")
+    ac_time_value: str = Field(default="", description="ac_time_value Cookie（用于自动刷新）")
     
     # Open Live API配置（可选，用于获取完整用户名）
     use_open_live: bool = Field(default=False, description="是否使用Open Live API")
@@ -138,4 +139,31 @@ def get_config() -> Config:
     if _config is None:
         _config = load_config()
     return _config
+
+
+def save_config(config: Config, config_path: Optional[Path] = None) -> None:
+    """
+    保存配置到文件
+    
+    Args:
+        config: 配置实例
+        config_path: 配置文件路径，默认为项目根目录下的 config.yaml
+    """
+    if config_path is None:
+        config_path = Path("config.yaml")
+    
+    # 转换为字典
+    config_dict = config.model_dump()
+    
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(
+                config_dict,
+                f,
+                allow_unicode=True,
+                default_flow_style=False,
+                sort_keys=False,
+            )
+    except Exception as e:
+        raise ValueError(f"配置保存失败：{e}")
 
