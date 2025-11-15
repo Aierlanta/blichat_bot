@@ -264,7 +264,7 @@ class DanmakuHandler(blivedm.BaseHandler):
             remaining = len(self._pending_tasks)
             if remaining > 0:
                 logger.warning(f"⚠️ 等待超时，强制取消剩余 {remaining} 个任务")
-                for task in self._pending_tasks:
+                for task in list(self._pending_tasks):
                     if not task.done():
                         task.cancel()
                 # 给任务一点时间清理
