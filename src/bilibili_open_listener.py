@@ -89,6 +89,9 @@ class BilibiliOpenLiveListener:
         logger.info("正在停止弹幕监听...")
         await self.client.stop_and_close()
         
+        # 等待所有待处理的弹幕回调任务完成（避免资源泄漏）
+        await self.handler.wait_all_tasks(timeout=3.0)
+        
         # 等待完全停止
         await asyncio.sleep(0.5)
     
@@ -111,6 +114,8 @@ class OpenLiveDanmakuHandler(blivedm.BaseHandler):
         super().__init__()
         self.on_danmaku = on_danmaku
         self.filter_system = filter_system
+        # 跟踪所有待处理的异步任务（防止关闭时被强制取消）
+        self._pending_tasks: set = set()
     
     def _on_open_live_danmaku(self, client: blivedm.OpenLiveClient, message: open_models.DanmakuMessage):
         """
@@ -136,10 +141,14 @@ class OpenLiveDanmakuHandler(blivedm.BaseHandler):
                 "title": "",
             }
             
-            # 创建异步任务并捕获异常
+            # 创建异步任务并跟踪
             task = asyncio.create_task(self.on_danmaku(user_id, uid_crc32, username, content, user_info))
+            self._pending_tasks.add(task)  # 跟踪任务
             
             def _log_task_exception(t: asyncio.Task) -> None:
+                # 任务完成后从待处理集合中移除
+                self._pending_tasks.discard(t)
+                
                 try:
                     exc = t.exception()  # 如果任务被取消，会抛出 CancelledError
                 except asyncio.CancelledError:
@@ -192,10 +201,14 @@ class OpenLiveDanmakuHandler(blivedm.BaseHandler):
                 "title": "",
             }
             
-            # 创建异步任务并捕获异常
+            # 创建异步任务并跟踪
             task = asyncio.create_task(self.on_danmaku(user_id, uid_crc32, username, sc_content, user_info))
+            self._pending_tasks.add(task)  # 跟踪任务
             
             def _log_task_exception(t: asyncio.Task) -> None:
+                # 任务完成后从待处理集合中移除
+                self._pending_tasks.discard(t)
+                
                 try:
                     exc = t.exception()  # 如果任务被取消，会抛出 CancelledError
                 except asyncio.CancelledError:
@@ -212,4 +225,38 @@ class OpenLiveDanmakuHandler(blivedm.BaseHandler):
         
         except Exception as e:
             logger.error(f"处理SC时出错：{e}", exc_info=True)
+    
+    async def wait_all_tasks(self, timeout: float = 5.0) -> None:
+        """
+        等待所有待处理的任务完成
+        
+        在关闭监听器时调用，确保所有弹幕回调都已完成，避免资源泄漏
+        
+        Args:
+            timeout: 等待超时时间（秒），超时后强制取消剩余任务
+        """
+        if not self._pending_tasks:
+            logger.debug("没有待处理的弹幕任务")
+            return
+        
+        task_count = len(self._pending_tasks)
+        logger.info(f"等待 {task_count} 个弹幕处理任务完成...")
+        
+        try:
+            # 等待所有任务完成（return_exceptions=True 避免异常传播）
+            await asyncio.wait_for(
+                asyncio.gather(*self._pending_tasks, return_exceptions=True),
+                timeout=timeout
+            )
+            logger.success(f"✅ {task_count} 个任务已完成")
+        except asyncio.TimeoutError:
+            # 超时后强制取消剩余任务
+            remaining = len(self._pending_tasks)
+            if remaining > 0:
+                logger.warning(f"⚠️ 等待超时，强制取消剩余 {remaining} 个任务")
+                for task in self._pending_tasks:
+                    if not task.done():
+                        task.cancel()
+                # 给任务一点时间清理
+                await asyncio.sleep(0.1)
 

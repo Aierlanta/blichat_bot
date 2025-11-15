@@ -164,8 +164,13 @@ class BotApplication:
         # 转发到TG
         await self.tg_bot.forward_danmaku(user_id, uid_crc32, username, content, user_info)
     
-    async def start(self) -> None:
-        """启动所有服务"""
+    async def start(self) -> asyncio.Task:
+        """
+        启动所有服务
+        
+        Returns:
+            listener_task: B站监听器任务（用于后续清理）
+        """
         logger.info("🚀 启动服务...")
         
         # 启动TG Bot
@@ -184,40 +189,66 @@ class BotApplication:
         except asyncio.CancelledError:
             pass
         
-        # 关闭服务
-        await self.shutdown(listener_task)
+        # 返回 listener_task 供清理使用
+        return listener_task
     
     async def shutdown(self, listener_task: asyncio.Task) -> None:
-        """优雅关闭所有服务"""
+        """
+        优雅关闭所有服务（已弃用，使用 _cleanup_components 替代）
+        
+        此方法保留仅为兼容性，实际清理逻辑已移至 _cleanup_components
+        """
+        await self._cleanup_components(listener_task)
+    
+    async def _cleanup_components(self, listener_task: asyncio.Task = None) -> None:
+        """
+        清理所有已初始化的组件
+        
+        此方法设计为防御性的，即使部分组件未初始化也能安全执行
+        适用于正常关闭和异常退出两种场景
+        
+        Args:
+            listener_task: B站监听器任务（可选，可能为 None）
+        """
         logger.info("="*60)
         logger.info("🛑 正在关闭所有服务...")
         logger.info("="*60)
         
-        # 停止B站监听器
+        # 停止B站监听器（如果已创建）
         if self.bili_listener:
-            logger.info("📡 停止弹幕监听器...")
-            await self.bili_listener.stop()
-            
-            # 等待监听任务完成
             try:
-                await asyncio.wait_for(listener_task, timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.warning("监听器停止超时，强制取消")
-                listener_task.cancel()
-                # 等待任务清理资源（防止资源泄漏）
-                try:
-                    await listener_task
-                except asyncio.CancelledError:
-                    pass
+                logger.info("📡 停止弹幕监听器...")
+                await self.bili_listener.stop()
+                
+                # 等待监听任务完成（如果任务存在）
+                if listener_task:
+                    try:
+                        await asyncio.wait_for(listener_task, timeout=5.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("监听器停止超时，强制取消")
+                        listener_task.cancel()
+                        # 等待任务清理资源（防止资源泄漏）
+                        try:
+                            await listener_task
+                        except asyncio.CancelledError:
+                            pass
+            except Exception as e:
+                logger.error(f"停止监听器时出错：{e}", exc_info=True)
         
-        # 停止TG Bot
+        # 停止TG Bot（如果已创建）
         if self.tg_bot:
-            logger.info("🤖 停止Telegram Bot...")
-            await self.tg_bot.stop()
+            try:
+                logger.info("🤖 停止Telegram Bot...")
+                await self.tg_bot.stop()
+            except Exception as e:
+                logger.error(f"停止TG Bot时出错：{e}", exc_info=True)
         
-        # 清理映射缓存
+        # 清理映射缓存（如果已创建）
         if self.mapper:
-            self.mapper.clear()
+            try:
+                self.mapper.clear()
+            except Exception as e:
+                logger.error(f"清理映射缓存时出错：{e}", exc_info=True)
         
         logger.success("="*60)
         logger.success("👋 BiliChat Bot 已安全关闭，下次再见~")
@@ -234,15 +265,20 @@ class BotApplication:
         # 此时 self._loop 已就绪，安全注册信号处理器
         self.setup_signal_handlers()
         
+        listener_task = None  # 提前声明，用于清理
+        
         try:
             await self.initialize()
-            await self.start()
+            listener_task = await self.start()  # start() 返回 listener_task
         except KeyboardInterrupt:
             logger.info("检测到Ctrl+C，正在关闭...")
         except Exception as e:
             logger.exception(f"运行时发生错误：{e}")
             raise
         finally:
+            # 确保资源清理（即使初始化失败也要清理已创建的组件）
+            logger.info("正在清理资源...")
+            await self._cleanup_components(listener_task)
             logger.info("程序退出")
 
 
