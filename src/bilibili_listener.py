@@ -5,6 +5,7 @@ B站直播弹幕监听器 - 仙境入口守望者
 
 import asyncio
 import dataclasses
+import re
 from typing import Callable, Awaitable, Any
 
 import blivedm
@@ -42,13 +43,24 @@ class EntryEffectMessage:
     uid: int = 0
     target_id: int = 0
     copy_writing: str = ''
+    uname: str = ''
+    face: str = ''
     
     @classmethod
     def from_command(cls, data: dict):
+        uname = ''
+        face = ''
+        if 'uinfo' in data and 'base' in data['uinfo']:
+            base = data['uinfo']['base']
+            uname = base.get('name', '')
+            face = base.get('face', '')
+            
         return cls(
             uid=data.get('uid', 0),
             target_id=data.get('target_id', 0),
             copy_writing=data.get('copy_writing', ''),
+            uname=uname,
+            face=face,
         )
 
 
@@ -155,8 +167,10 @@ class DanmakuHandler(blivedm.BaseHandler):
         
         # 注册额外的命令处理器
         self._CMD_CALLBACK_DICT = self._CMD_CALLBACK_DICT.copy()
-        self._CMD_CALLBACK_DICT['INTERACT_WORD'] = self._interact_word_callback
-        self._CMD_CALLBACK_DICT['ENTRY_EFFECT'] = self._entry_effect_callback
+        # 使用 lambda 适配参数：blivedm 调用 callback(self, client, command)
+        # 这里的 self 是 DanmakuHandler 实例
+        self._CMD_CALLBACK_DICT['INTERACT_WORD'] = lambda handler, client, command: self._interact_word_callback(client, command)
+        self._CMD_CALLBACK_DICT['ENTRY_EFFECT'] = lambda handler, client, command: self._entry_effect_callback(client, command)
 
     def _interact_word_callback(self, client, command):
         return self._on_interact_word(client, InteractWordMessage.from_command(command['data']))
@@ -229,7 +243,7 @@ class DanmakuHandler(blivedm.BaseHandler):
                 f"收到礼物：{message.uname} 赠送了 {message.gift_name} x{message.num}"
             )
             
-            content = f"[系统消息] 赠送了 {message.gift_name} x{message.num}"
+            content = f"[系统消息] {message.uname} 赠送了 {message.gift_name} x{message.num}"
             # 简单的用户信息
             user_info = {
                 "user_level": 0,
@@ -247,7 +261,7 @@ class DanmakuHandler(blivedm.BaseHandler):
         if not self.filter_system:
             logger.debug(f"收到上舰：{message.username} 开通了 {message.gift_name}")
             
-            content = f"[系统消息] 开通了 {message.gift_name}"
+            content = f"[系统消息] {message.username} 开通了 {message.gift_name}"
             
             user_info = {
                 "user_level": 0,
@@ -278,7 +292,7 @@ class DanmakuHandler(blivedm.BaseHandler):
                 
             logger.debug(f"交互消息：{message.username} {msg_type_str}")
             
-            content = f"[系统消息] {msg_type_str}"
+            content = f"[系统消息] {message.username} {msg_type_str}"
             
             user_info = {
                 "user_level": 0,
@@ -310,7 +324,7 @@ class DanmakuHandler(blivedm.BaseHandler):
                 
             logger.debug(f"交互消息(JSON)：{message.uname} {msg_type_str}")
             
-            content = f"[系统消息] {msg_type_str}"
+            content = f"[系统消息] {message.uname} {msg_type_str}"
             
             user_info = {
                 "user_level": 0,
@@ -327,8 +341,19 @@ class DanmakuHandler(blivedm.BaseHandler):
         """处理进场特效消息"""
         if not self.filter_system:
             # copy_writing 格式如： "欢迎 舰长 User 进入直播间"
-            content = f"[系统消息] {message.copy_writing}"
-            logger.debug(f"进场特效：{content}")
+            # 有时 copy_writing 包含 <%User%> 这样的占位符
+            # 如果解析出了完整用户名，优先替换占位符以避免名字被屏蔽（如果有的话）
+            content = message.copy_writing
+            if message.uname:
+                # 尝试替换 <%...%> 为完整用户名
+                content = re.sub(r'<%.*?%>', message.uname, content)
+            
+            # 如果替换失败或没有占位符，清理残留标记
+            content = content.replace("<%", "").replace("%>", "")
+            
+            final_content = f"[系统消息] {content}"
+            
+            logger.debug(f"进场特效：{final_content}")
             
             user_info = {
                 "user_level": 0,
@@ -339,11 +364,10 @@ class DanmakuHandler(blivedm.BaseHandler):
                 "title": "",
             }
             
-            # EntryEffectMessage 中可能没有用户名，只有 copy_writing
-            # 这里尝试从 copy_writing 提取或者就用 "舰长"
-            # uid 是有的
+            # 优先使用解析出的用户名，否则尝试默认值
+            username = message.uname if message.uname else "舰长/提督"
             
-            self._create_task(self.on_danmaku(message.uid, "", "舰长/提督", content, user_info))
+            self._create_task(self.on_danmaku(message.uid, "", username, final_content, user_info))
     
     def _on_super_chat(self, client: blivedm.BLiveClient, message: web.SuperChatMessage):
         """

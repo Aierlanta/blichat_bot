@@ -284,10 +284,17 @@ class TelegramBot:
             
             # 格式化消息
             badge_str = " ".join(badges) if badges else ""
-            if badge_str:
-                text = f"💬 {badge_str} [{username}]\n{content}"
+            
+            # 根据消息类型决定前缀
+            # 如果是系统消息，直接发送内容（不带用户名头）
+            if content.startswith("[系统消息]"):
+                text = content
             else:
-                text = f"💬 [{username}]\n{content}"
+                prefix = "💬 "
+                if badge_str:
+                    text = f"{prefix}{badge_str} [{username}]\n{content}"
+                else:
+                    text = f"{prefix}[{username}]\n{content}"
             
             # 发送到TG
             sent_message = await self.app.bot.send_message(
