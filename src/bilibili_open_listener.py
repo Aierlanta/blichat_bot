@@ -117,6 +117,26 @@ class OpenLiveDanmakuHandler(blivedm.BaseHandler):
         # 跟踪所有待处理的异步任务（防止关闭时被强制取消）
         self._pending_tasks: set = set()
     
+    def _create_task(self, coro: Awaitable[None]) -> None:
+        """创建一个被跟踪的异步任务，并处理异常"""
+        task = asyncio.create_task(coro)
+        self._pending_tasks.add(task)
+        
+        def _log_task_exception(t: asyncio.Task) -> None:
+            self._pending_tasks.discard(t)
+            try:
+                exc = t.exception()
+            except asyncio.CancelledError:
+                return
+            
+            if exc:
+                logger.error(
+                    f"回调异常：{exc}",
+                    exc_info=(type(exc), exc, exc.__traceback__)
+                )
+        
+        task.add_done_callback(_log_task_exception)
+
     def _on_open_live_danmaku(self, client: blivedm.OpenLiveClient, message: open_models.DanmakuMessage):
         """
         处理Open Live弹幕消息
@@ -142,26 +162,7 @@ class OpenLiveDanmakuHandler(blivedm.BaseHandler):
             }
             
             # 创建异步任务并跟踪
-            task = asyncio.create_task(self.on_danmaku(user_id, uid_crc32, username, content, user_info))
-            self._pending_tasks.add(task)  # 跟踪任务
-            
-            def _log_task_exception(t: asyncio.Task) -> None:
-                # 任务完成后从待处理集合中移除
-                self._pending_tasks.discard(t)
-                
-                try:
-                    exc = t.exception()  # 如果任务被取消，会抛出 CancelledError
-                except asyncio.CancelledError:
-                    # 任务取消是正常的关闭流程，不记录错误
-                    return
-                
-                if exc:
-                    logger.error(
-                        f"弹幕回调异常：{exc}",
-                        exc_info=(type(exc), exc, exc.__traceback__)
-                    )
-            
-            task.add_done_callback(_log_task_exception)
+            self._create_task(self.on_danmaku(user_id, uid_crc32, username, content, user_info))
         
         except Exception as e:
             logger.error(f"处理弹幕时出错：{e}", exc_info=True)
@@ -172,11 +173,37 @@ class OpenLiveDanmakuHandler(blivedm.BaseHandler):
             logger.debug(
                 f"收到礼物：{message.uname} 赠送了 {message.gift_name} x{message.gift_num}"
             )
+            
+            content = f"[系统消息] 赠送了 {message.gift_name} x{message.gift_num}"
+            
+            user_info = {
+                "user_level": 0,
+                "medal_name": message.fan_medal_name or "",
+                "medal_level": message.fan_medal_level or 0,
+                "vip": 0,
+                "admin": False,
+                "title": "",
+            }
+            
+            self._create_task(self.on_danmaku(message.uid, "", message.uname, content, user_info))
     
     def _on_open_live_buy_guard(self, client: blivedm.OpenLiveClient, message: open_models.GuardBuyMessage):
         """处理上舰消息"""
         if not self.filter_system:
             logger.debug(f"收到上舰：{message.user_info.uname} 开通了舰长")
+            
+            content = f"[系统消息] 开通了舰长"
+            
+            user_info = {
+                "user_level": 0,
+                "medal_name": "",
+                "medal_level": 0,
+                "vip": 0,
+                "admin": False,
+                "title": "",
+            }
+            
+            self._create_task(self.on_danmaku(message.user_info.uid, "", message.user_info.uname, content, user_info))
     
     def _on_open_live_super_chat(self, client: blivedm.OpenLiveClient, message: open_models.SuperChatMessage):
         """处理醒目留言（SC）"""
@@ -202,26 +229,7 @@ class OpenLiveDanmakuHandler(blivedm.BaseHandler):
             }
             
             # 创建异步任务并跟踪
-            task = asyncio.create_task(self.on_danmaku(user_id, uid_crc32, username, sc_content, user_info))
-            self._pending_tasks.add(task)  # 跟踪任务
-            
-            def _log_task_exception(t: asyncio.Task) -> None:
-                # 任务完成后从待处理集合中移除
-                self._pending_tasks.discard(t)
-                
-                try:
-                    exc = t.exception()  # 如果任务被取消，会抛出 CancelledError
-                except asyncio.CancelledError:
-                    # 任务取消是正常的关闭流程，不记录错误
-                    return
-                
-                if exc:
-                    logger.error(
-                        f"SC回调异常：{exc}",
-                        exc_info=(type(exc), exc, exc.__traceback__)
-                    )
-            
-            task.add_done_callback(_log_task_exception)
+            self._create_task(self.on_danmaku(user_id, uid_crc32, username, sc_content, user_info))
         
         except Exception as e:
             logger.error(f"处理SC时出错：{e}", exc_info=True)

@@ -4,13 +4,52 @@ B站直播弹幕监听器 - 仙境入口守望者
 """
 
 import asyncio
-from typing import Callable, Awaitable
+import dataclasses
+from typing import Callable, Awaitable, Any
 
 import blivedm
 from blivedm.models import web
 from loguru import logger
 
 from .config import BilibiliConfig
+
+
+@dataclasses.dataclass
+class InteractWordMessage:
+    """
+    进入房间、关注主播等互动消息 (JSON version)
+    """
+    uid: int = 0
+    uname: str = ''
+    msg_type: int = 0
+    timestamp: int = 0
+    
+    @classmethod
+    def from_command(cls, data: dict):
+        return cls(
+            uid=data.get('uid', 0),
+            uname=data.get('uname', ''),
+            msg_type=data.get('msg_type', 1),
+            timestamp=data.get('timestamp', 0),
+        )
+
+
+@dataclasses.dataclass
+class EntryEffectMessage:
+    """
+    进场特效消息 (舰长等高贵用户进场)
+    """
+    uid: int = 0
+    target_id: int = 0
+    copy_writing: str = ''
+    
+    @classmethod
+    def from_command(cls, data: dict):
+        return cls(
+            uid=data.get('uid', 0),
+            target_id=data.get('target_id', 0),
+            copy_writing=data.get('copy_writing', ''),
+        )
 
 
 class BilibiliDanmakuListener:
@@ -105,7 +144,7 @@ class DanmakuHandler(blivedm.BaseHandler):
     
     def __init__(
         self,
-        on_danmaku: Callable[[int, str, str], Awaitable[None]],
+        on_danmaku: Callable[[int, str, str, str, dict], Awaitable[None]],
         filter_system: bool = True,
     ):
         super().__init__()
@@ -113,7 +152,38 @@ class DanmakuHandler(blivedm.BaseHandler):
         self.filter_system = filter_system
         # 跟踪所有待处理的异步任务（防止关闭时被强制取消）
         self._pending_tasks: set = set()
+        
+        # 注册额外的命令处理器
+        self._CMD_CALLBACK_DICT = self._CMD_CALLBACK_DICT.copy()
+        self._CMD_CALLBACK_DICT['INTERACT_WORD'] = self._interact_word_callback
+        self._CMD_CALLBACK_DICT['ENTRY_EFFECT'] = self._entry_effect_callback
+
+    def _interact_word_callback(self, client, command):
+        return self._on_interact_word(client, InteractWordMessage.from_command(command['data']))
+
+    def _entry_effect_callback(self, client, command):
+        return self._on_entry_effect(client, EntryEffectMessage.from_command(command['data']))
     
+    def _create_task(self, coro: Awaitable[None]) -> None:
+        """创建一个被跟踪的异步任务，并处理异常"""
+        task = asyncio.create_task(coro)
+        self._pending_tasks.add(task)
+        
+        def _log_task_exception(t: asyncio.Task) -> None:
+            self._pending_tasks.discard(t)
+            try:
+                exc = t.exception()
+            except asyncio.CancelledError:
+                return
+            
+            if exc:
+                logger.error(
+                    f"回调异常：{exc}",
+                    exc_info=(type(exc), exc, exc.__traceback__)
+                )
+        
+        task.add_done_callback(_log_task_exception)
+
     def _on_danmaku(self, client: blivedm.BLiveClient, message: web.DanmakuMessage):
         """
         处理弹幕消息
@@ -144,45 +214,136 @@ class DanmakuHandler(blivedm.BaseHandler):
             
             logger.debug(f"收到弹幕：[{username}({uid_crc32[:8]})] {content}")
             
-            # 创建异步任务调用回调，并捕获异常（防止异常被静默吞掉）
-            task = asyncio.create_task(self.on_danmaku(user_id, uid_crc32, username, content, user_info))
-            self._pending_tasks.add(task)  # 跟踪任务
-            
-            # 添加异常回调，确保异常被记录并清理任务引用
-            def _log_task_exception(t: asyncio.Task) -> None:
-                # 任务完成后从待处理集合中移除
-                self._pending_tasks.discard(t)
-                
-                try:
-                    exc = t.exception()  # 如果任务被取消，会抛出 CancelledError
-                except asyncio.CancelledError:
-                    # 任务取消是正常的关闭流程，不记录错误
-                    return
-                
-                if exc:
-                    logger.error(
-                        f"弹幕回调异常：{exc}",
-                        exc_info=(type(exc), exc, exc.__traceback__)
-                    )
-            
-            task.add_done_callback(_log_task_exception)
+            # 创建异步任务调用回调
+            self._create_task(self.on_danmaku(user_id, uid_crc32, username, content, user_info))
         
         except Exception as e:
             logger.error(f"处理弹幕时出错：{e}", exc_info=True)
     
     def _on_gift(self, client: blivedm.BLiveClient, message: web.GiftMessage):
         """
-        处理礼物消息（可选记录，但不转发）
+        处理礼物消息
         """
         if not self.filter_system:
             logger.debug(
                 f"收到礼物：{message.uname} 赠送了 {message.gift_name} x{message.num}"
             )
+            
+            content = f"[系统消息] 赠送了 {message.gift_name} x{message.num}"
+            # 简单的用户信息
+            user_info = {
+                "user_level": 0,
+                "medal_name": message.medal_name or "",
+                "medal_level": message.medal_level or 0,
+                "vip": 0,
+                "admin": False,
+                "title": "",
+            }
+            
+            self._create_task(self.on_danmaku(message.uid, "", message.uname, content, user_info))
     
     def _on_buy_guard(self, client: blivedm.BLiveClient, message: web.GuardBuyMessage):
         """处理上舰消息"""
         if not self.filter_system:
             logger.debug(f"收到上舰：{message.username} 开通了 {message.gift_name}")
+            
+            content = f"[系统消息] 开通了 {message.gift_name}"
+            
+            user_info = {
+                "user_level": 0,
+                "medal_name": "",
+                "medal_level": 0,
+                "vip": 0,
+                "admin": False,
+                "title": "",
+            }
+            
+            self._create_task(self.on_danmaku(message.uid, "", message.username, content, user_info))
+            
+    def _on_interact_word_v2(self, _client: blivedm.BLiveClient, message: web.InteractWordV2Message):
+        """处理进场/关注消息"""
+        if not self.filter_system:
+            # msg_type: 1进入, 2关注, 3分享, 4特别关注, 5互粉, 6点赞
+            msg_type_str = "进入直播间"
+            if message.msg_type == 2:
+                msg_type_str = "关注了直播间"
+            elif message.msg_type == 3:
+                msg_type_str = "分享了直播间"
+            elif message.msg_type == 4:
+                msg_type_str = "特别关注了直播间"
+            elif message.msg_type == 5:
+                msg_type_str = "互粉了直播间"
+            elif message.msg_type == 6:
+                msg_type_str = "点赞了直播间"
+                
+            logger.debug(f"交互消息：{message.username} {msg_type_str}")
+            
+            content = f"[系统消息] {msg_type_str}"
+            
+            user_info = {
+                "user_level": 0,
+                "medal_name": "",
+                "medal_level": 0,
+                "vip": 0,
+                "admin": False,
+                "title": "",
+            }
+            
+            # InteractWordV2Message 使用 username 字段
+            self._create_task(self.on_danmaku(message.uid, "", message.username, content, user_info))
+
+    def _on_interact_word(self, _client: blivedm.BLiveClient, message: InteractWordMessage):
+        """处理进场/关注消息 (JSON版)"""
+        if not self.filter_system:
+            # msg_type: 1进入, 2关注, 3分享, 4特别关注, 5互粉, 6点赞
+            msg_type_str = "进入直播间"
+            if message.msg_type == 2:
+                msg_type_str = "关注了直播间"
+            elif message.msg_type == 3:
+                msg_type_str = "分享了直播间"
+            elif message.msg_type == 4:
+                msg_type_str = "特别关注了直播间"
+            elif message.msg_type == 5:
+                msg_type_str = "互粉了直播间"
+            elif message.msg_type == 6:
+                msg_type_str = "点赞了直播间"
+                
+            logger.debug(f"交互消息(JSON)：{message.uname} {msg_type_str}")
+            
+            content = f"[系统消息] {msg_type_str}"
+            
+            user_info = {
+                "user_level": 0,
+                "medal_name": "",
+                "medal_level": 0,
+                "vip": 0,
+                "admin": False,
+                "title": "",
+            }
+            
+            self._create_task(self.on_danmaku(message.uid, "", message.uname, content, user_info))
+
+    def _on_entry_effect(self, _client: blivedm.BLiveClient, message: EntryEffectMessage):
+        """处理进场特效消息"""
+        if not self.filter_system:
+            # copy_writing 格式如： "欢迎 舰长 User 进入直播间"
+            content = f"[系统消息] {message.copy_writing}"
+            logger.debug(f"进场特效：{content}")
+            
+            user_info = {
+                "user_level": 0,
+                "medal_name": "",
+                "medal_level": 0,
+                "vip": 0,
+                "admin": False,
+                "title": "",
+            }
+            
+            # EntryEffectMessage 中可能没有用户名，只有 copy_writing
+            # 这里尝试从 copy_writing 提取或者就用 "舰长"
+            # uid 是有的
+            
+            self._create_task(self.on_danmaku(message.uid, "", "舰长/提督", content, user_info))
     
     def _on_super_chat(self, client: blivedm.BLiveClient, message: web.SuperChatMessage):
         """
@@ -192,7 +353,7 @@ class DanmakuHandler(blivedm.BaseHandler):
         """
         try:
             user_id = message.uid or 0
-            uid_crc32 = message.uid_crc32 or ""
+            uid_crc32 = getattr(message, 'uid_crc32', "")
             username = message.uname
             content = message.message
             
@@ -206,32 +367,13 @@ class DanmakuHandler(blivedm.BaseHandler):
                 "user_level": message.user_level or 0,
                 "medal_name": message.medal_name or "",
                 "medal_level": message.medal_level or 0,
-                "vip": message.vip or 0,
+                "vip": getattr(message, 'vip', 0),
                 "admin": False,
                 "title": "",
             }
             
             # 创建异步任务并跟踪
-            task = asyncio.create_task(self.on_danmaku(user_id, uid_crc32, username, sc_content, user_info))
-            self._pending_tasks.add(task)  # 跟踪任务
-            
-            def _log_task_exception(t: asyncio.Task) -> None:
-                # 任务完成后从待处理集合中移除
-                self._pending_tasks.discard(t)
-                
-                try:
-                    exc = t.exception()  # 如果任务被取消，会抛出 CancelledError
-                except asyncio.CancelledError:
-                    # 任务取消是正常的关闭流程，不记录错误
-                    return
-                
-                if exc:
-                    logger.error(
-                        f"SC回调异常：{exc}",
-                        exc_info=(type(exc), exc, exc.__traceback__)
-                    )
-            
-            task.add_done_callback(_log_task_exception)
+            self._create_task(self.on_danmaku(user_id, uid_crc32, username, sc_content, user_info))
         
         except Exception as e:
             logger.error(f"处理SC时出错：{e}", exc_info=True)
