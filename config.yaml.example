@@ -21,9 +21,8 @@ bilibili:
   ac_time_value: ""  # 留空则不启用自动刷新
   
   # ===== Open Live API配置（可选）=====
-  # 使用Open Live API可以获取完整用户名（非脱敏）
-  # 需要主播权限！
-  use_open_live: false  # 改为true启用Open Live API
+  # 方案一：使用官方 Open Live（需要开放平台审核通过）
+  use_open_live: false  # 改为 true 启用 Open Live API
   
   # Open Live API凭证（从B站创作中心获取）
   # 获取方式：
@@ -34,6 +33,13 @@ bilibili:
   access_key_secret: ""   # 访问密钥Secret
   app_id: 0               # 应用ID（数字）
   auth_code: ""           # 身份码（主播身份验证码）
+
+  # 方案二：通过 blive.chat 代理 Open Live（适用于官方开放平台审核不过的情况）
+  # - 将 roomKeyType=2 的 roomKeyValue（如 EJAFYIPRZ4E84）填到 blive_chat_room_key
+  # - 只用于“普通弹幕 + SC”，进房间等系统消息仍由 Web 监听负责
+  use_blive_chat: false
+  blive_chat_room_key: ""      # 例如：EJAFYIPRZ4E84
+  blive_chat_api_base: ""      # 可留空，自动从 https://api1.blive.chat/api/endpoints 获取
 
 # Telegram Bot配置
 telegram:

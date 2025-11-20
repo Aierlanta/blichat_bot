@@ -25,6 +25,20 @@ class BilibiliConfig(BaseModel):
     access_key_secret: str = Field(default="", description="Open Live访问密钥")
     app_id: int = Field(default=0, description="Open Live应用ID")
     auth_code: str = Field(default="", description="房间身份码/认证码")
+
+    # blive.chat Open Live 代理配置（可选，用于在无法申请官方开放平台时获取完整用户名）
+    use_blive_chat: bool = Field(
+        default=False,
+        description="是否通过 blive.chat 代理 Open Live，仅用于弹幕/SC（进场等系统消息仍走 Web 监听）",
+    )
+    blive_chat_room_key: str = Field(
+        default="",
+        description="blive.chat 房间 roomKeyValue，例如 EJAFYIPRZ4E84",
+    )
+    blive_chat_api_base: str = Field(
+        default="",
+        description="blive.chat API 基地址，留空则自动从 https://api1.blive.chat/api/endpoints 获取",
+    )
     
     @field_validator("room_id")
     @classmethod

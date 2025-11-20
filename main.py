@@ -33,7 +33,8 @@ class BotApplication:
         self.mapper = None
         self.bili_sender = None
         self.tg_bot = None
-        self.bili_listener = None
+        self.bili_listener = None  # 主弹幕监听器（Web / 官方 Open Live / blive.chat Open Live）
+        self.web_system_listener = None  # 仅用于系统消息的 Web 监听器（可选）
         
         # 延迟到事件循环运行后创建，避免在无循环上下文中创建 asyncio 对象
         self._shutdown_event = None
@@ -134,19 +135,39 @@ class BotApplication:
             bili_sender=self.bili_sender,
             message_mapper=self.mapper,
         )
-        
+
         # 初始化B站监听器（根据配置选择）
-        if self.config.bilibili.use_open_live:
+        bili_cfg = self.config.bilibili
+        if getattr(bili_cfg, "use_blive_chat", False):
+            # 模式三：通过 blive.chat 代理 Open Live：
+            # - 普通弹幕 + SC 走 blive.chat Open Live（完整用户名）
+            # - 进场/关注等系统消息仍走 Web 监听器，但只转发 [系统消息]
+            from src.blivechat_open_listener import BliveChatOpenLiveListener
+
+            logger.info("📡 初始化B站Web弹幕监听器（仅系统消息）...")
+            self.web_system_listener = BilibiliDanmakuListener(
+                config=bili_cfg,
+                on_danmaku=self._on_system_message_from_web,
+                filter_system=self.config.bot.filter_system_message,
+            )
+
+            logger.info("📡 初始化Blive.chat Open Live弹幕监听器（完整用户名模式）...")
+            self.bili_listener = BliveChatOpenLiveListener(
+                config=bili_cfg,
+                on_danmaku=self._on_danmaku_received,
+                filter_system=self.config.bot.filter_system_message,
+            )
+        elif bili_cfg.use_open_live:
             logger.info("📡 初始化B站Open Live弹幕监听器（完整用户名模式）...")
             self.bili_listener = BilibiliOpenLiveListener(
-                config=self.config.bilibili,
+                config=bili_cfg,
                 on_danmaku=self._on_danmaku_received,
                 filter_system=self.config.bot.filter_system_message,
             )
         else:
             logger.info("📡 初始化B站Web弹幕监听器（标准模式）...")
             self.bili_listener = BilibiliDanmakuListener(
-                config=self.config.bilibili,
+                config=bili_cfg,
                 on_danmaku=self._on_danmaku_received,
                 filter_system=self.config.bot.filter_system_message,
             )
@@ -170,6 +191,22 @@ class BotApplication:
             return
         # 转发到TG
         await self.tg_bot.forward_danmaku(user_id, uid_crc32, username, content, user_info)
+
+    async def _on_system_message_from_web(
+        self,
+        user_id: int,
+        uid_crc32: str,
+        username: str,
+        content: str,
+        user_info: dict,
+    ) -> None:
+        """
+        Web 弹幕监听器专用回调：只转发系统消息（[系统消息] 开头），避免与 Open Live 弹幕重复。
+        """
+        if not content.startswith("[系统消息]"):
+            # 普通弹幕 / SC 由 Open Live 负责，这里直接丢弃
+            return
+        await self._on_danmaku_received(user_id, uid_crc32, username, content, user_info)
     
     async def start(self) -> asyncio.Task:
         """
@@ -183,8 +220,13 @@ class BotApplication:
         # 启动TG Bot
         await self.tg_bot.start()
         
-        # 在后台任务中启动B站监听器
+        # 在后台任务中启动主 B 站监听器
         listener_task = asyncio.create_task(self.bili_listener.start())
+
+        # 如果存在 Web 系统消息监听器，单独启动一个任务
+        self._web_system_task: asyncio.Task | None = None
+        if self.web_system_listener is not None:
+            self._web_system_task = asyncio.create_task(self.web_system_listener.start())
         
         logger.success("="*60)
         logger.success("✨ BiliChat Bot 启动完成！魔法桥已连接~")
@@ -241,6 +283,26 @@ class BotApplication:
                             pass
             except Exception as e:
                 logger.error(f"停止监听器时出错：{e}", exc_info=True)
+
+        # 停止仅用于系统消息的 Web 监听器（如果存在）
+        if self.web_system_listener:
+            try:
+                logger.info("📡 停止Web系统消息监听器...")
+                await self.web_system_listener.stop()
+
+                web_task = getattr(self, "_web_system_task", None)
+                if web_task is not None:
+                    try:
+                        await asyncio.wait_for(web_task, timeout=5.0)
+                    except asyncio.TimeoutError:
+                        logger.warning("Web系统消息监听器停止超时，强制取消")
+                        web_task.cancel()
+                        try:
+                            await web_task
+                        except asyncio.CancelledError:
+                            pass
+            except Exception as e:
+                logger.error(f"停止Web系统消息监听器时出错：{e}", exc_info=True)
         
         # 停止TG Bot（如果已创建）
         if self.tg_bot:
